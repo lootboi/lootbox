@@ -29,13 +29,6 @@ const btcStrategy = new SimpleMarketMakingStrategy(
   50
 );
 
-const ethStrategy = new SimpleMarketMakingStrategy(
-  new OrderBook("ETH", hyperLiquidHandler),
-  10000,
-  50
-);
-
 perpetualExchange.addMarket("BTC", btcStrategy);
-perpetualExchange.addMarket("ETH", ethStrategy);
 
 perpetualExchange.startStrategies();
