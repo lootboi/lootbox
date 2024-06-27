@@ -35,7 +35,6 @@ export interface IOrderBook {
   /**
    * API related methods
    */
-  getMarketRates(): Promise<OrderBookRates>;
 
   /**
    * Math related methods
@@ -46,4 +45,5 @@ export interface IOrderBook {
   calculateAskSpread(): number;
   calculateWeightedMidPrice(): number;
   getSlippage(side: OrderSide, size: number): number;
+  fetchMarketRates(): Promise<OrderBookRates[]>;
 }

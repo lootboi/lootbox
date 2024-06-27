@@ -1,16 +1,18 @@
 import WebSocket from "ws";
 
+import { IOrderBook } from "../interfaces/orderBook";
 import { OrderBookHandler } from "./OrderBookHandler";
-import { Order, OrderSide } from "../types/orders";
+
 import {
   OrderBookPayload,
   OrderBookRates,
   OrderBookStatus,
 } from "../types/orderBookHandler";
-import { IOrderBook } from "../interfaces/orderBook";
-import { Exchange } from "../types/exchange";
+import { Order, OrderSide } from "../types/orders";
+import { Exchange } from "./Exchange";
 
 export class OrderBook implements IOrderBook {
+  public exchangeName: string;
   public exchange: Exchange;
   public silent: boolean;
   public initialized: boolean = false;
@@ -36,6 +38,7 @@ export class OrderBook implements IOrderBook {
   public askSpread: number = 0;
 
   public internalWebSocket: WebSocket;
+  private static internalWebSockets: { [port: number]: WebSocket } = {};
 
   constructor(
     market: string,
@@ -44,48 +47,58 @@ export class OrderBook implements IOrderBook {
   ) {
     this.market = market;
     this.orderBookHandler = orderBookHandler;
-    this.connectToInternalWebSocket();
     this.silent = silent;
-    this.exchange = orderBookHandler.exchange;
+    this.exchangeName = orderBookHandler.exchangeName;
+    this.connectToInternalWebSocket();
   }
 
-  private connectToInternalWebSocket(silent: boolean = false): void {
+  private connectToInternalWebSocket(): void {
     const wss = `ws://localhost:${this.orderBookHandler.port}`;
-    this.internalWebSocket = new WebSocket(wss);
+    if (!OrderBook.internalWebSockets[this.orderBookHandler.port]) {
+      const internalWebSocket = new WebSocket(wss);
 
-    this.internalWebSocket.on("open", () => {
-      this.log("Connected to internal WebSocket server.");
-    });
+      internalWebSocket.on("open", () => {
+        this.log("Connected to internal WebSocket server.");
+      });
 
-    this.internalWebSocket.on("message", (data: WebSocket.Data) => {
-      this.handleMessage(silent, data);
-    });
+      internalWebSocket.on("message", (data: WebSocket.Data) => {
+        this.handleMessage(this.silent, data);
+      });
 
-    this.internalWebSocket.on("close", () => {
-      this.log("Disconnected from internal WebSocket server. Reconnecting...");
-      setTimeout(() => this.connectToInternalWebSocket(), 5000);
-    });
+      internalWebSocket.on("close", () => {
+        this.log(
+          "Disconnected from internal WebSocket server. Reconnecting..."
+        );
+        setTimeout(() => this.connectToInternalWebSocket(), 5000);
+      });
 
-    this.internalWebSocket.on("error", (error) => {
-      this.log(`WebSocket error: ${error}`);
-    });
+      internalWebSocket.on("error", (error) => {
+        this.log(`WebSocket error: ${error}`);
+      });
+
+      OrderBook.internalWebSockets[this.orderBookHandler.port] =
+        internalWebSocket;
+    }
+
+    this.internalWebSocket =
+      OrderBook.internalWebSockets[this.orderBookHandler.port];
   }
 
-  private handleMessage(silent: boolean = false, data: WebSocket.Data): void {
+  private handleMessage(silent: boolean, data: WebSocket.Data): void {
     const payload: OrderBookPayload = JSON.parse(data.toString());
 
     this.lastUpdate = payload.localTs;
     this.bids = payload.bids;
     this.asks = payload.asks;
 
-    this.updateBook(silent);
+    this.updateBook();
   }
 
   public subscribe(subscription: object): void {
     // Implement subscription logic
   }
 
-  public updateBook(silent: boolean): void {
+  public updateBook(): void {
     if (this.bids.length > 0) {
       this.bestBid = parseFloat(this.bids[0].px);
       this.totalBidSize = this.bids.reduce(
@@ -115,43 +128,22 @@ export class OrderBook implements IOrderBook {
     this.bidSpread = this.calculateBidSpread();
     this.askSpread = this.calculateAskSpread();
 
+    const handlerStatus = this.orderBookHandler.status[this.market];
+    const handlerHistoricalData =
+      this.orderBookHandler.historicalData[this.market];
+
     if (
-      this.orderBookHandler.status === OrderBookStatus.CONNECTED &&
-      this.orderBookHandler.historicalData.length >=
-        this.orderBookHandler.sampleSize &&
+      handlerStatus === OrderBookStatus.CONNECTED &&
+      handlerHistoricalData.length >= this.orderBookHandler.sampleSize &&
       !this.initialized
     ) {
       this.initialized = true;
       this.log(
-        `Order book initialized for ${this.exchange} ${this.market} market.`
+        `Order book initialized for ${this.exchangeName} ${this.market} market.`
       );
     } else if (this.orderBookHandler.sampleSize === 0) {
       this.initialized = true;
     }
-
-    if (
-      !silent &&
-      this.orderBookHandler.status === OrderBookStatus.CONNECTED &&
-      this.initialized
-    ) {
-      this.log(
-        JSON.stringify({
-          bestBid: this.bestBid,
-          bestAsk: this.bestAsk,
-          totalBidSize: this.totalBidSize,
-          totalAskSize: this.totalAskSize,
-          midPrice: this.midPrice,
-          spread: this.spread,
-          bidSpread: this.bidSpread,
-          askSpread: this.askSpread,
-          weightedMidPrice: this.weightedMidPrice,
-        })
-      );
-    }
-  }
-
-  public fetchMarketRates(): void {
-    this.orderBookHandler.fetchMarketRates();
   }
 
   public calculateMidPrice(): number {
@@ -208,13 +200,23 @@ export class OrderBook implements IOrderBook {
     return slippage <= mid ? slippage : mid;
   }
 
-  public async getMarketRates(): Promise<OrderBookRates> {
-    this.rates = await this.orderBookHandler.fetchMarketRates();
-    return this.rates;
+  public updateMarketRates(rates: OrderBookRates): void {
+    this.rates = rates;
   }
 
   protected log(message: string): void {
     const timestamp = new Date().toISOString();
     console.log(`[${timestamp}] ${message}`);
+  }
+
+  public async fetchMarketRates(): Promise<OrderBookRates[]> {
+    const rates = await this.orderBookHandler.fetchMarketRates();
+
+    const marketRate = rates.find((rate) => rate.market === this.market);
+
+    if (marketRate) this.updateMarketRates(marketRate);
+    if (!marketRate) this.log(`No market rate found for ${this.market}`);
+
+    return rates;
   }
 }

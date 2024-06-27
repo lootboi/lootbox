@@ -1,4 +1,4 @@
-import { Exchange } from "./exchange";
+import { SupportedExchanges } from "./exchange";
 import { Order } from "./orders";
 
 export enum ExchangeRequestStatus {
@@ -15,7 +15,7 @@ export enum OrderBookStatus {
 }
 
 export type OrderBookPayload = {
-  ex: Exchange;
+  ex: SupportedExchanges;
   symbol: string;
   status: OrderBookStatus;
   ts: number;

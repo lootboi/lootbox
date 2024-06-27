@@ -1,86 +1,127 @@
 import WebSocket from "ws";
 import axios from "axios";
 
-import { OrderBookHandler } from "../classes/OrderBookHandler";
-import { RateLimiter } from "../classes/RateLimiter";
-
-import { HyperLiquidWsBook } from "../types/hyperLiquid";
 import {
   ExchangeRequestStatus,
   OrderBookRates,
   OrderBookStatus,
 } from "../types/orderBookHandler";
-import { Exchange } from "../types/exchange";
+import { SupportedExchanges } from "../types/exchange";
+import { HyperLiquidWsBook } from "../types/hyperLiquid";
+
+import { OrderBookHandler } from "../classes/OrderBookHandler";
+import { RateLimiter } from "../classes/RateLimiter";
 
 import { ExchangeConfigs } from "../config";
+import { HyperLiquidPairs } from "../constants/hyperliquid";
 
 export class HyperLiquidOrderBookHandler extends OrderBookHandler {
+  public exchange = SupportedExchanges.HYPER_LIQUID;
   private updateIds: { [symbol: string]: number } = {};
-  private symbol: string;
 
-  constructor(port: number, symbol: string, sampleSize: number = 0) {
+  constructor(port: number, sampleSize: number = 0) {
     super(
-      Exchange.HYPER_LIQUID,
-      symbol,
       sampleSize,
       port,
-      ExchangeConfigs.get(Exchange.HYPER_LIQUID)?.orderBookWss as string,
+      ExchangeConfigs.get(SupportedExchanges.HYPER_LIQUID)
+        ?.orderBookWss as string,
       ["coin", "levels", "time"]
     );
-    this.symbol = symbol;
-    this.rateLimiter = new RateLimiter(Exchange.HYPER_LIQUID, 1200, 1200 / 60);
+    this.rateLimiter = new RateLimiter(
+      SupportedExchanges.HYPER_LIQUID,
+      1200,
+      1200 / 60
+    );
   }
 
-  protected handleMessage(data: WebSocket.Data): void {
-    const recv: HyperLiquidWsBook = JSON.parse(data.toString());
-    if (this.validatePayload(recv)) {
-      const symbol = this.symbol;
-      const updateId = recv.data.time;
-      if (symbol in this.updateIds) {
-        if (updateId <= this.updateIds[symbol]) {
-          this.log(`Duplicate or old update for ${symbol}, ignoring.`);
-          return; // Duplicate or old update, ignore
-        }
-        this.updateIds[symbol] = updateId;
-        this.process(recv);
-      } else {
-        this.updateIds[symbol] = updateId;
-        this.resync(recv);
+  protected sendSubscription(symbol: string): void {
+    const message = JSON.stringify({
+      method: "subscribe",
+      subscription: { type: "l2Book", coin: symbol },
+    });
+    this.getWebSocketInstance().send(message);
+    this.log(`Subscribed to HyperLiquid ${symbol} order book.`);
+  }
+
+  protected getSymbolFromMessage(data: any): string | null {
+    if (data && data.data && data.data.coin) {
+      return data.data.coin;
+    }
+    return null;
+  }
+
+  protected handleMessage(symbol: string, data: WebSocket.Data): void {
+    const message = data;
+
+    try {
+      const parsedData = JSON.parse(JSON.stringify(message));
+
+      // Handle subscription response
+      if (parsedData.channel === "subscriptionResponse") {
+        const coin = parsedData.data.subscription.coin;
+        this.log(`Successfully subscribed to ${coin} order book.`);
+        return;
       }
-    } else {
-      // @ts-ignore
-      this.send(OrderBookStatus.ERROR, this.symbol); // ERROR status
+
+      const recv: HyperLiquidWsBook = parsedData;
+
+      if (this.validatePayload(recv)) {
+        const updateId = recv.data.time;
+        if (symbol in this.updateIds) {
+          if (updateId <= this.updateIds[symbol]) {
+            this.log(`Duplicate or old update for ${symbol}, ignoring.`);
+            return; // Duplicate or old update, ignore
+          }
+          this.updateIds[symbol] = updateId;
+          this.process(symbol, recv);
+        } else {
+          this.updateIds[symbol] = updateId;
+          this.resync(symbol, recv);
+        }
+      } else {
+        this.send(OrderBookStatus.ERROR, symbol); // ERROR status
+      }
+    } catch (error) {
+      this.log(`Error processing message for ${symbol}: ${error.message}`);
     }
   }
 
-  protected resync(recv: HyperLiquidWsBook): void {
+  protected resync(symbol: string, recv: HyperLiquidWsBook): void {
     try {
-      const symbol = recv.data.coin;
-      this.payload.ts = recv.data.time;
-      this.payload.localTs = Date.now();
-      this.payload.bids = recv.data.levels[0];
-      this.payload.asks = recv.data.levels[1];
+      this.payloads[symbol] = {
+        ...this.payloads[symbol],
+        ts: recv.data.time,
+        localTs: Date.now(),
+        bids: recv.data.levels[0],
+        asks: recv.data.levels[1],
+      };
       this.send(OrderBookStatus.RESYNCING, symbol); // RESYNC status
     } catch (error) {
       this.log(`Resync error: ${error.message}`);
-      this.send(OrderBookStatus.ERROR, recv.data.coin); // ERROR status
+      this.send(OrderBookStatus.ERROR, symbol); // ERROR status
     }
   }
 
-  protected process(recv: HyperLiquidWsBook): void {
+  protected process(symbol: string, recv: HyperLiquidWsBook): void {
     try {
-      const symbol = recv.data.coin;
-      this.payload.ts = recv.data.time;
-      this.payload.localTs = Date.now() / 1000;
-      this.payload.bids = recv.data.levels[0];
-      this.payload.asks = recv.data.levels[1];
+      this.payloads[symbol] = {
+        ...this.payloads[symbol],
+        ts: recv.data.time,
+        localTs: Date.now() / 1000,
+        bids: recv.data.levels[0],
+        asks: recv.data.levels[1],
+      };
 
       if (this.sampleSize === 0) {
         this.send(OrderBookStatus.CONNECTED, symbol); // NORMAL status
       } else {
-        if (this.historicalData.length < this.sampleSize) {
+        if (!this.historicalData[symbol]) {
+          this.historicalData[symbol] = [];
+        }
+
+        if (this.historicalData[symbol].length < this.sampleSize) {
           this.send(OrderBookStatus.WARMING_UP, symbol); // WARMING_UP status
-          if (this.historicalData.length === 0) {
+          if (this.historicalData[symbol].length === 0) {
             this.log(
               `Warmup period started for ${this.exchange} ${symbol} market`
             );
@@ -89,11 +130,11 @@ export class HyperLiquidOrderBookHandler extends OrderBookHandler {
           this.send(OrderBookStatus.CONNECTED, symbol); // NORMAL status
         }
 
-        this.addHistoricalData({ ...this.payload });
+        this.addHistoricalData(symbol, { ...this.payloads[symbol] });
       }
     } catch (error) {
       this.log(`Process error: ${error.message}`);
-      this.send(OrderBookStatus.ERROR, recv.data.coin); // ERROR status
+      this.send(OrderBookStatus.ERROR, symbol); // ERROR status
     }
   }
 
@@ -114,51 +155,11 @@ export class HyperLiquidOrderBookHandler extends OrderBookHandler {
   }
 
   protected send(orderBookStatus: OrderBookStatus, symbol: string): void {
-    this.payload.status = orderBookStatus;
-    this.broadcast();
+    this.payloads[symbol].status = orderBookStatus;
+    this.broadcast(symbol);
   }
 
-  public subscribe(): void {
-    const message = JSON.stringify({
-      method: "subscribe",
-      subscription: { type: "l2Book", coin: this.symbol },
-    });
-    this.websocket.send(message);
-    this.log(`Subscribed to  HyperLiquid ${this.symbol} order book.`);
-  }
-
-  protected connect(): void {
-    this.log(`Attempting to connect to external WebSocket...`);
-
-    try {
-      this.websocket = new WebSocket(this.url);
-
-      this.websocket.addEventListener("open", () => {
-        this.status = OrderBookStatus.CONNECTED;
-        this.reconnectAttempts = 0;
-        this.log("WebSocket connection established.");
-        this.subscribe(); // Subscribe after connection is established
-      });
-
-      this.websocket.addEventListener("close", (event) => {
-        this.status = OrderBookStatus.ERROR;
-        this.log(`WebSocket connection closed: ${event.reason}`);
-        this.reconnect();
-      });
-
-      this.websocket.addEventListener("error", (event) => {
-        this.log(`WebSocket error: ${event.message}`);
-      });
-
-      this.websocket.addEventListener("message", (message) => {
-        this.handleMessage(message.data);
-      });
-    } catch (error) {
-      this.log(`Failed to create WebSocket: ${error.message}`);
-    }
-  }
-
-  public async fetchMarketRates(): Promise<OrderBookRates> {
+  public async fetchMarketRates(): Promise<OrderBookRates[]> {
     await this.rateLimiter.acquire(2);
     try {
       const response = await axios.post(
@@ -174,22 +175,20 @@ export class HyperLiquidOrderBookHandler extends OrderBookHandler {
       );
       const data = this.parseMarketRates(response.data);
       if (data) {
-        const rate = data.find((rate) => rate.market === this.symbol);
-        if (rate) {
-          return rate;
-        }
+        return data;
       }
     } catch (error) {
-      this.log(`Error fetching funding rate: ${error.message}`);
+      this.log(`Error fetching market rates for HyperLiquid: ${error.message}`);
     }
-    return {
+    // For the length of the universe, return an error status
+    return Array.from(Object.keys(HyperLiquidPairs), () => ({
       status: ExchangeRequestStatus.ERROR,
-      market: this.symbol,
+      market: "",
       fundingRate: 0,
       spot: 0,
       openInterest: 0,
       premium: 0,
-    };
+    }));
   }
 
   private parseMarketRates(response: any): OrderBookRates[] {

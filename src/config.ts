@@ -1,5 +1,5 @@
 import dotenv from "dotenv";
-import { Exchange } from "./types/exchange";
+import { SupportedExchanges } from "./types/exchange";
 import { ExchangeConfig } from "./types";
 dotenv.config();
 
@@ -17,9 +17,9 @@ export const hyperLiquidOrderBookWss = "wss://api.hyperliquid.xyz/ws";
 /**
  * Order book configs.
  */
-export const ExchangeConfigs = new Map<Exchange, ExchangeConfig>([
+export const ExchangeConfigs = new Map<SupportedExchanges, ExchangeConfig>([
   [
-    Exchange.HYPER_LIQUID,
+    SupportedExchanges.HYPER_LIQUID,
     {
       orderBookWss: hyperLiquidOrderBookWss,
     },

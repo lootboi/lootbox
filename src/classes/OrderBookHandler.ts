@@ -1,61 +1,43 @@
-import WebSocket from "ws";
-import { Server as WebSocketServer } from "ws";
-
+import WebSocket, { WebSocketServer } from "ws";
+import { RateLimiter } from "./RateLimiter";
 import {
-  OrderBookStatus,
   OrderBookPayload,
   OrderBookRates,
+  OrderBookStatus,
 } from "../types/orderBookHandler";
-import { Exchange } from "../types/exchange";
-import { RateLimiter } from "./RateLimiter";
 
 export abstract class OrderBookHandler {
-  public exchange: Exchange;
+  public exchangeName: string;
   protected url: string;
   public port: number;
 
   protected websocket: WebSocket;
-  private internalServer: WebSocketServer;
+  protected internalServer: WebSocketServer;
   protected rateLimiter: RateLimiter;
 
   public reconnectInterval: number = 5000; // 5 seconds
   public maxReconnectAttempts: number = 10;
   public reconnectAttempts: number = 0;
 
-  public status: OrderBookStatus = OrderBookStatus.INITIALIZING;
+  public status: { [symbol: string]: OrderBookStatus } = {};
   private requiredKeys: Set<string> = new Set();
 
-  protected payload: OrderBookPayload = {
-    ex: Exchange.UNKNOWN,
-    symbol: "",
-    status: OrderBookStatus.INITIALIZING,
-    ts: 0,
-    localTs: 0,
-    bids: [],
-    asks: [],
-  };
-
-  public historicalData: OrderBookPayload[] = [];
+  protected payloads: { [symbol: string]: OrderBookPayload } = {};
+  public historicalData: { [symbol: string]: OrderBookPayload[] } = {};
   public sampleSize: number;
 
   constructor(
-    exchange: Exchange,
-    symbol: string,
     sampleSize: number = 0,
     port: number,
     url: string,
     requiredKeys: string[] = []
   ) {
-    this.exchange = exchange;
-    this.payload.ex = this.exchange;
-    this.payload.symbol = symbol;
     this.sampleSize = sampleSize;
     this.url = url;
     this.port = port;
     this.addRequiredKeys(requiredKeys);
     this.internalServer = new WebSocketServer({ port });
     this.internalServer.on("connection", (ws) => {
-      ws.send(JSON.stringify(this.payload)); // Send initial payload
       this.log("Client connected to internal WebSocket server.");
     });
     this.connect();
@@ -67,28 +49,47 @@ export abstract class OrderBookHandler {
       this.websocket = new WebSocket(this.url);
 
       this.websocket.addEventListener("open", () => {
-        this.status = OrderBookStatus.INITIALIZING;
         this.reconnectAttempts = 0;
         this.log("WebSocket connection established.");
+        this.processPendingSubscriptions();
       });
 
       this.websocket.addEventListener("close", (event) => {
-        this.status = OrderBookStatus.ERROR;
         this.log(`WebSocket connection closed: ${event.reason}`);
         this.reconnect();
       });
 
       this.websocket.addEventListener("error", (event) => {
-        this.log(`WebSocket error: ${event.message}`);
+        this.log(`WebSocket error: ${event}`);
       });
 
       this.websocket.addEventListener("message", (message) => {
-        this.handleMessage(message.data);
+        const data = JSON.parse(message.data.toString());
+        const symbol = this.getSymbolFromMessage(data);
+        if (symbol) {
+          this.handleMessage(symbol, data);
+        }
       });
     } catch (error) {
       this.log(`Failed to create WebSocket: ${error.message}`);
     }
   }
+
+  private processPendingSubscriptions(): void {
+    while (this.pendingSubscriptions.length > 0) {
+      const symbol = this.pendingSubscriptions.shift();
+      if (symbol) {
+        this.sendSubscription(symbol);
+      }
+    }
+  }
+
+  protected abstract getSymbolFromMessage(data: any): string | null;
+  protected abstract sendSubscription(symbol: string): void;
+  public abstract fetchMarketRates(): Promise<OrderBookRates[]>;
+  protected abstract handleMessage(symbol: string, data: any): void;
+  protected abstract resync(symbol: string, recv: any): void;
+  protected abstract process(symbol: string, recv: any): void;
 
   public reconnect(): void {
     if (this.reconnectAttempts < this.maxReconnectAttempts) {
@@ -117,8 +118,8 @@ export abstract class OrderBookHandler {
     return this.websocket;
   }
 
-  protected broadcast(): void {
-    const message = JSON.stringify(this.payload);
+  protected broadcast(symbol: string): void {
+    const message = JSON.stringify(this.payloads[symbol]);
     this.internalServer.clients.forEach((client) => {
       if (client.readyState === WebSocket.OPEN) {
         client.send(message);
@@ -126,24 +127,29 @@ export abstract class OrderBookHandler {
     });
   }
 
-  protected addHistoricalData(sample: OrderBookPayload): void {
-    if (this.historicalData.length >= this.sampleSize) {
-      this.historicalData.shift(); // Remove the oldest sample
+  protected addHistoricalData(symbol: string, sample: OrderBookPayload): void {
+    if (!this.historicalData[symbol]) {
+      this.historicalData[symbol] = [];
     }
-    this.historicalData.push(sample);
-    this.updateStatusBasedOnHistoricalData();
+
+    if (this.historicalData[symbol].length >= this.sampleSize) {
+      this.historicalData[symbol].shift(); // Remove the oldest sample
+    }
+    this.historicalData[symbol].push(sample);
+    this.updateStatusBasedOnHistoricalData(symbol);
   }
 
-  protected updateStatusBasedOnHistoricalData(): void {
-    if (this.historicalData.length === this.sampleSize) {
-      this.status = OrderBookStatus.CONNECTED;
-    } else if (this.historicalData.length > 0) {
-      this.status = OrderBookStatus.WARMING_UP;
+  protected updateStatusBasedOnHistoricalData(symbol: string): void {
+    if (this.historicalData[symbol].length === this.sampleSize) {
+      this.status[symbol] = OrderBookStatus.CONNECTED;
+    } else if (this.historicalData[symbol].length > 0) {
+      this.status[symbol] = OrderBookStatus.WARMING_UP;
     }
   }
 
-  public abstract fetchMarketRates(): Promise<OrderBookRates>;
-  protected abstract handleMessage(data: any): void;
-  protected abstract resync(recv: any): void;
-  protected abstract process(recv: any): void;
+  private pendingSubscriptions: string[] = [];
+
+  public queueSubscription(symbol: string): void {
+    this.pendingSubscriptions.push(symbol);
+  }
 }

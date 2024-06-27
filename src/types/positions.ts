@@ -1,5 +1,5 @@
 import { OrderSide } from "./orders";
-import { Exchange } from "./exchange";
+import { SupportedExchanges } from "./exchange";
 
 /**
  * Represents an order status.
@@ -25,7 +25,7 @@ export enum PositionStatus {
  * @property {string} fpx - filled price (only for filled Position)
  */
 export type Position = {
-  ex: Exchange;
+  ex: SupportedExchanges;
   side: OrderSide;
   px: string;
   m: string;

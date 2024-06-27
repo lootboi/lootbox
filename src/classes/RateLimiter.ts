@@ -1,14 +1,18 @@
-import { Exchange } from "../types/exchange";
+import { SupportedExchanges } from "../types/exchange";
 
 export class RateLimiter {
-  private exchange: Exchange;
+  private exchange: SupportedExchanges;
 
   private maxTokens: number;
   private refillRate: number;
   private tokens: number;
   private lastRefill: number;
 
-  constructor(exchange: Exchange, maxTokens: number, refillRate: number) {
+  constructor(
+    exchange: SupportedExchanges,
+    maxTokens: number,
+    refillRate: number
+  ) {
     this.exchange = exchange;
     this.maxTokens = maxTokens;
     this.refillRate = refillRate;
