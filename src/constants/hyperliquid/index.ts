@@ -1,5 +1,7 @@
 import { HyperLiquidMarkets } from "../../types/exchange/hyperliquid";
 
+export const HYPER_LIQUID_URL = "https://api.hyperliquid.xyz/exchange";
+
 export const HyperLiquidPairs: HyperLiquidMarkets = {
   BTC: { maxLeverage: 50, name: "BTC", szDecimals: 5 },
   ETH: { maxLeverage: 50, name: "ETH", szDecimals: 4 },

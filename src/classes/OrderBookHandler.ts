@@ -1,5 +1,8 @@
 import WebSocket, { WebSocketServer } from "ws";
+
 import { RateLimiter } from "./RateLimiter";
+import { HyperLiquidExecutor } from "./Executor";
+
 import {
   OrderBookPayload,
   OrderBookRates,
@@ -14,6 +17,7 @@ export abstract class OrderBookHandler {
   protected websocket: WebSocket;
   protected internalServer: WebSocketServer;
   protected rateLimiter: RateLimiter;
+  protected executor: HyperLiquidExecutor;
 
   public reconnectInterval: number = 5000; // 5 seconds
   public maxReconnectAttempts: number = 10;
